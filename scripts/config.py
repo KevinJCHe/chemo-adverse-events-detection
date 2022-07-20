@@ -17,13 +17,17 @@ TERMS OF USE:
 # Paths
 root_path = 'XXXXX'
 share_path = 'XXXXXX'
-sas_folder = 'XXXXXXX'
+sas_folder = 'XXXXXX'
+sas_folder2 = 'XXXXXXX'
 regiments_folder = 'XXXXXXX'
 cyto_folder = 'CYTOPENIA' # Cytopenia folder = 'CYTOPENIA'
 acu_folder = 'PROACCT' # Acute care use folder = 'PROACCT' (PRediction of Acute Care use during Cancer Treatment)
 can_folder = 'CAN' # Cisplatin-associated nephrotoxicity folder = 'CAN'
 symp_folder = 'SYMPTOM' # Symptom Deteroriation folder = 'SYMPTOM'
 death_folder = 'DEATH' # Death folder = 'DEATH'
+
+# Date to temporally split data into developement and test cohort
+split_date = '2017-06-30'
 
 # Main Blood Types and Low Blood Count Thresholds
 blood_types = {'neutrophil': {'cytopenia_threshold': 1.5,  # cytopenia = low blood count
@@ -151,12 +155,15 @@ cancer_type_mapping = {'81403': 'Adenocarcinoma', # originate in mucous glands i
                        '94403': 'Brain/Spinal Cancer (GBM)', # GBM: Glioblastoma
                        '81203': 'Tansitional Cell Cancer'} # Can occur in kidney, bladder, ureter, urethra, urachus
 
-cancer_code_mapping = {'C18': 'Colon',
+cancer_code_mapping = {'C16': 'Stomach',
+                       'C18': 'Colon',
+                       'C19': 'Rectosigmoid Junction',
                        'C20': 'Rectum',
                        'C25': 'Pancreas',
                        'C34': 'Lung/Bronchus',
                        'C50': 'Breast', 
                        'C53': 'Cervix Uteri',
+                       'C54': 'Corpus Uteri', # body of uterus
                        'C56': 'Ovary',
                        'C61': 'Prostate Gland',
                        'C67': 'Bladder',
@@ -202,7 +209,8 @@ drug_cols = ['din', # DIN: Drug Identification Number
              'cco_drug_code', # CCO: Cancer Care Ontario
              'dose_administered', 'measurement_unit'] 
     
-olis_cols = ['ikn', 'ObservationCode', 'ObservationDateTime', 'ObservationReleaseTS', 'ReferenceRange', 'Units', 'value']
+olis_cols = ['ikn', 'ObservationCode', 'ObservationDateTime', 'ObservationReleaseTS', 'ReferenceRange', 'Units', 
+             'value_recommended_d']
 
 symptom_cols = ['ecog_grade', 'prfs_grade', 'Wellbeing','Tiredness', 'Pain', 'Shortness of Breath', 'Drowsiness', 
                 'Lack of Appetite', 'Depression', 'Anxiety', 'Nausea']
@@ -211,15 +219,6 @@ immigration_cols = ['ikn', 'is_immigrant', 'speaks_english']
 
 diag_cols = [f'dx10code{i}' for i in range(1, 11)]
 event_main_cols = ['ikn', 'arrival_date', 'depart_date']
-
-# Model Training
-# categorical hyperparam options
-nn_solvers = ['adam', 'sgd']
-nn_activations = ['tanh', 'relu', 'logistic']
-
-# calibration params
-calib_param = {'method': 'isotonic', 'cv': 3}
-calib_param_logistic = {'method': 'sigmoid', 'cv': 3}
 
 # Diagnostic Codes
 # fever and infection (INFX)
@@ -331,11 +330,13 @@ clean_variable_mapping = {'chemo': 'chemotherapy',
                           'prev': 'previous', 
                           'baseline_': '', 
                           'num': 'number_of', 
+                          '_count': '',
                           'lhin_cd': 'local health integration network', 
                           'curr_topog_cd': 'cancer_location', 
                           'curr_morph_cd': 'cancer_type', 
                           'prfs': 'patient_reported_functional_status',
-                          'ODBGF': 'ODB_growth_factor',
+                          'eGFR': 'estimated_glomerular_filtration_rate',
+                          'ODBGF': 'growth_factor',
                           'MCV': 'mean_corpuscular_volume',
                           'MCHC': 'mean_corpuscular_hemoglobin_concentration',
                           'MCH': 'mean_corpuscular_hemoglobin',
@@ -351,7 +352,7 @@ clean_variable_mapping = {'chemo': 'chemotherapy',
 variable_groupings_by_keyword = {'Acute care use': 'INFX|GI|TR|prev_H|prior_H|prev_ED|prior_ED',
                                  'Cancer': 'curr_topog_cd|curr_morph_cd', 
                                  'Demographic': 'age|body|immigrant|lhin|sex|english',
-                                 'Laboratory': 'count',
+                                 'Laboratory': 'baseline',
                                  'Treatment': 'visit_month|regimen|intent|chemo|therapy|cycle',
                                  'Symptoms': '|'.join(symptom_cols)}
 
@@ -365,3 +366,56 @@ SCr_rise_threshold2 = 353.68 # umol/L (4.0mg/dL)
 # glomerular filtration rate (eGFR) - https://www.kidney.org/professionals/kdoqi/gfr_calculator/formula
 eGFR_params = {'F': {'K': 0.7, 'a': -0.241, 'multiplier': 1.012}, # Female
                'M': {'K': 0.9, 'a': -0.302, 'multiplier': 1.0}} # Male
+
+# Model Training
+# model param options
+nn_solvers = ['adam', 'sgd']
+nn_activations = ['tanh', 'relu', 'logistic']
+
+# calibration params
+calib_param = {'method': 'isotonic', 'cv': 3}
+calib_param_logistic = {'method': 'sigmoid', 'cv': 3}
+
+# model tuning params
+model_tuning_param = {'LR': {'C': (0.0001, 1)},
+                      'XGB': {'learning_rate': (0.001, 0.1),
+                              'n_estimators': (50, 200),
+                              'max_depth': (3, 7),
+                              'gamma': (0, 1),
+                              'reg_lambda': (0, 1)},
+                      'RF': {'n_estimators': (50, 200),
+                             'max_depth': (3, 7),
+                             'max_features': (0.01, 1)},
+                      'NN': {'learning_rate_init': (0.0001, 0.1),
+                             'batch_size': (64, 512),
+                             'momentum': (0,1),
+                             'alpha': (0,1),
+                             'first_layer_size': (16, 256),
+                             'second_layer_size': (16, 256),
+                             'solver': (0, len(nn_solvers)-0.0001),
+                             'activation': (0, len(nn_activations)-0.0001)},
+                      'RNN': {'batch_size': (8, 512),
+                              'learning_rate': (0.0001, 0.01),
+                              'hidden_size': (10, 200),
+                              'hidden_layers': (1, 5),
+                              'dropout': (0.0, 0.9),
+                              'model': (0.0, 1.0)},
+                      'ENS': {alg: (0, 1) for alg in ['LR', 'XGB', 'RF', 'NN', 'RNN']},
+                      # Baseline Models
+                      'LOESS': {'span': (0.01, 1)},
+                      'SPLINE': {'n_knots': (2,10), 
+                                 'degree': (2,6),
+                                 'C': (0.0001, 1)},
+                      'POLY': {'degree': (2,6),
+                               'C': (0.0001, 1)}}
+                                 
+bayesopt_param = {'LR': {'init_points': 3, 'n_iter': 10}, 
+                  'XGB': {'init_points': 5, 'n_iter': 25},
+                  'RF': {'init_points': 3, 'n_iter': 20}, 
+                  'NN': {'init_points': 5, 'n_iter': 50},
+                  'RNN': {'init_points': 3, 'n_iter': 70},
+                  'ENS': {'init_points': 4, 'n_iter': 30},
+                  # Baseline Models
+                  'LOESS': {'init_points': 3, 'n_iter': 10},
+                  'SPLINE': {'init_points': 3, 'n_iter': 20},
+                  'POLY': {'init_points': 3, 'n_iter': 15}}

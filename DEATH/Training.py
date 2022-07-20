@@ -29,16 +29,20 @@ get_ipython().run_line_magic('autoreload', '2')
 # In[2]:
 
 
+import os
+import tqdm
 import pandas as pd
 pd.options.mode.chained_assignment = None
 import numpy as np
+import pickle
+from collections import defaultdict
 import matplotlib.pyplot as plt
 
 from scripts.utility import (initialize_folders, load_predictions,
                              get_nunique_entries, get_nmissing, 
                              data_characteristic_summary, feature_summary, subgroup_performance_summary)
 from scripts.visualize import (importance_plot, subgroup_performance_plot)
-from scripts.config import (root_path, acu_folder)
+from scripts.config import (root_path, death_folder)
 from scripts.prep_data import (PrepDataEDHD)
 from scripts.train import (TrainML, TrainRNN, TrainENS)
 from scripts.evaluate import (Evaluate)
@@ -49,10 +53,9 @@ from scripts.evaluate import (Evaluate)
 
 # config
 processes = 64
-days = 30 # predict event within this number of days since chemo visit (the look ahead window)
-target_keyword = f'_within_{days}days'
-main_dir = f'{root_path}/{acu_folder}'
-output_path = f'{main_dir}/models/within_{days}_days'
+target_keyword = 'Mortality'
+main_dir = f'{root_path}/{death_folder}'
+output_path = f'{main_dir}/models'
 initialize_folders(output_path, extra_folders=['figures/important_groups'])
 
 
@@ -62,7 +65,7 @@ initialize_folders(output_path, extra_folders=['figures/important_groups'])
 
 
 # Prepare Data for Model Input
-prep = PrepDataEDHD(adverse_event='acu')
+prep = PrepDataEDHD(adverse_event='death')
 
 
 # In[5]:
@@ -96,8 +99,8 @@ get_nmissing(model_data, verbose=True)
 model_data = prep.get_data(target_keyword, missing_thresh=80, verbose=True)
 print(f"Size of model_data: {model_data.shape}")
 print(f"Number of unique patients: {model_data['ikn'].nunique()}")
-N = model_data.loc[model_data['ACU_within_30days'], 'ikn'].nunique()
-print(f"Number of unique patients that had ACU within 30 days after a treatment session: {N}")
+N = model_data.loc[model_data['30d Mortality'], 'ikn'].nunique()
+print(f"Number of unique patients that died within 30 days after a treatment session: {N}")
 
 
 # In[10]:
@@ -122,34 +125,26 @@ dataset = X_train, X_valid, X_test, Y_train, Y_valid, Y_test = prep.split_data(p
 prep.get_label_distribution(Y_train, Y_valid, Y_test)
 
 
-# In[13]:
-
-
-Y_train.columns = Y_train.columns.str.replace(target_keyword, '')
-Y_valid.columns = Y_valid.columns.str.replace(target_keyword, '')
-Y_test.columns = Y_test.columns.str.replace(target_keyword, '')
-
-
 # # Train ML Models
 
-# In[37]:
+# In[14]:
 
 
 pd.set_option('display.max_columns', None)
 
 
-# In[140]:
+# In[15]:
 
 
 # Initialize Training class
 train_ml = TrainML(dataset, output_path, n_jobs=processes)
 
 
-# In[ ]:
+# In[18]:
 
 
 skip_alg = []
-train_ml.tune_and_train(run_bayesopt=False, run_training=True, save_preds=True, skip_alg=skip_alg)
+train_ml.tune_and_train(run_bayesopt=False, run_training=False, save_preds=True, skip_alg=skip_alg)
 
 
 # # Train RNN Model
@@ -166,7 +161,7 @@ X_test['ikn'] = model_data['ikn']
 train_rnn = TrainRNN(dataset, output_path)
 
 
-# In[15]:
+# In[17]:
 
 
 # Distrubution of the sequence lengths in the training set
@@ -177,7 +172,7 @@ plt.grid()
 plt.show()
 
 
-# In[16]:
+# In[18]:
 
 
 # A closer look at the samples of sequences with length 1 to 21
@@ -188,16 +183,16 @@ plt.xticks(range(1, 21))
 plt.show()
 
 
-# In[17]:
+# In[50]:
 
 
-train_rnn.tune_and_train(run_bayesopt=False, run_training=False, run_calibration=True, save_preds=True)
+train_rnn.tune_and_train(run_bayesopt=False, run_training=False, run_calibration=False, save_preds=True)
 
 
 # # Train ENS Model 
 # Find Optimal Ensemble Weights
 
-# In[14]:
+# In[13]:
 
 
 # combine rnn and ml predictions
@@ -209,7 +204,7 @@ del preds_rnn
 train_ens = TrainENS(dataset, output_path, preds)
 
 
-# In[15]:
+# In[14]:
 
 
 train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pred=True)
@@ -217,26 +212,27 @@ train_ens.tune_and_train(run_bayesopt=False, run_calibration=False, calibrate_pr
 
 # # Evaluate Models
 
-# In[16]:
+# In[15]:
 
 
 eval_models = Evaluate(output_path=output_path, preds=train_ens.preds, labels=train_ens.labels, orig_data=model_data)
 
 
-# In[22]:
+# In[101]:
 
 
-kwargs = {'get_baseline': True, 'display_ci': True, 'load_ci': True, 'save_ci': False, 'verbose': False}
+kwargs = {'get_baseline': True, 'display_ci': True, 'load_ci': True, 'save_ci': False, 'verbose': False, 
+          'baseline_cols': ['regimen', 'intent_of_systemic_treatment']}
 eval_models.get_evaluation_scores(**kwargs)
 
 
-# In[23]:
+# In[102]:
 
 
-eval_models.plot_curves(curve_type='pr', legend_location='lower left', figsize=(12,18), save=False)
-eval_models.plot_curves(curve_type='roc', legend_location='lower right', figsize=(12,18), save=False)
-eval_models.plot_curves(curve_type='pred_cdf', figsize=(12,18), save=False) # cumulative distribution function of model prediction
-eval_models.plot_calibs(legend_location='upper left', figsize=(12,18), save=False) 
+eval_models.plot_curves(curve_type='pr', legend_location='lower left', figsize=(12,18))
+eval_models.plot_curves(curve_type='roc', legend_location='lower right', figsize=(12,18))
+eval_models.plot_curves(curve_type='pred_cdf', figsize=(12,18)) # cumulative distribution function of model prediction
+eval_models.plot_calibs(legend_location='upper left', figsize=(12,18)) 
 # eval_models.plot_calibs(include_pred_hist=True, legend_location='upper left', figsize=(12,28), padding={'pad_y1': 0.3, 'pad_y0': 3.0})
 
 
@@ -244,23 +240,23 @@ eval_models.plot_calibs(legend_location='upper left', figsize=(12,18), save=Fals
 
 # ## Study Characteristics
 
-# In[98]:
+# In[103]:
 
 
-data_characteristic_summary(eval_models, save_dir=f'{main_dir}/models')
+data_characteristic_summary(eval_models, save_dir=f'{main_dir}/models/tables')
 
 
 # ## Feature Characteristics
 
-# In[132]:
+# In[104]:
 
 
-feature_summary(eval_models, prep, target_keyword, save_dir=f'{main_dir}/models').head(60)
+feature_summary(eval_models, prep, target_keyword, save_dir=f'{main_dir}/models/tables').head(60)
 
 
 # ## Threshold Operating Points
 
-# In[38]:
+# In[110]:
 
 
 pred_thresholds = np.arange(0.05, 0.51, 0.05)
@@ -269,63 +265,56 @@ thresh_df = eval_models.operating_points(algorithm='ENS', points=pred_thresholds
 thresh_df
 
 
-# ## Most Important Features/Feature Groups
+# ## Ensemble Most Important Features/Feature Groups
 
 # In[ ]:
 
 
-get_ipython().system('python scripts/perm_importance.py --adverse-event ACU')
+get_ipython().system('python scripts/perm_importance.py --adverse-event DEATH')
 
 
-# In[17]:
-
-
-# importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
-importance_plot('ENS', eval_models.target_types, output_path, figsize=(6,50), top=10, importance_by='feature', padding={'pad_x0': 4.0})
-
-
-# In[18]:
+# In[119]:
 
 
 # importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
-importance_plot('ENS', eval_models.target_types, output_path, figsize=(6,50), top=10, importance_by='group', padding={'pad_x0': 1.2})
+importance_plot('ENS', eval_models.target_types, output_path, figsize=(6,30), top=10, importance_by='feature', padding={'pad_x0': 4.0})
+
+
+# In[126]:
+
+
+# importance score is defined as the decrease in AUROC Score when feature value is randomly shuffled
+importance_plot('ENS', eval_models.target_types, output_path, figsize=(6,30), top=10, importance_by='group', padding={'pad_x0': 1.2})
 
 
 # ## Performance on Subgroups
 
-# In[134]:
+# In[132]:
 
 
-df = subgroup_performance_summary('ENS', eval_models, pred_thresh=0.25, display_ci=False, load_ci=False, save_ci=False)
+df = subgroup_performance_summary('ENS', eval_models, pred_thresh=0.2, display_ci=False, load_ci=False, save_ci=False)
 df
 
 
-# ## Decision Curve Plot
+# ## 30 day Mortality
 
-# In[141]:
+# ### Ensemble All the Plots
 
-
-eval_models.plot_decision_curve_analysis('ENS', padding={'pad_x0': 1.0})
-
-
-# ## ACU
-
-# ### All the Plots
-
-# In[26]:
+# In[128]:
 
 
-eval_models.all_plots_for_single_target(algorithm='ENS', target_type='ACU')
+eval_models.all_plots_for_single_target(algorithm='ENS', target_type='30d Mortality', calib_ci=False)
 
 
-# ### Subgroup Performance Plot
+# ### Ensemble Subgroup Performance Plot
 
-# In[136]:
+# In[134]:
 
 
 subgroups = ['Entire Test Cohort', 'Age', 'Sex', 'Immigration', 'Regimen', 'Days Since Starting Regimen']
 padding = {'pad_y0': 1.2, 'pad_x1': 2.6, 'pad_y1': 0.2}
-subgroup_performance_plot(df, subgroups=subgroups, padding=padding, figsize=(12,24), save=True, save_dir=f'{output_path}/figures')
+subgroup_performance_plot(df, target_type='30d Mortality', subgroups=subgroups, 
+                          padding=padding, figsize=(12,24), save=True, save_dir=f'{output_path}/figures')
 # PPV = 0.3 means roughly for every 3 alarms, 2 are false alarms and 1 is true alarm
 # Sesnsitivity = 0.5 means roughly for every 2 true alarms, the model predicts 1 of them correctly
 # Event Rate = 0.15 means true alarms occur 15% of the time
@@ -333,89 +322,110 @@ subgroup_performance_plot(df, subgroups=subgroups, padding=padding, figsize=(12,
 
 # # Scratch Notes
 
-# ## Brooks 2 Variable Based Model
+# ## Kaplan Meier Curve and Lifeline Plot
 
-# In[137]:
-
-
-df = prep.get_data(target_keyword)
-print(f'Size of data = {len(df)}, Number of patients = {df["ikn"].nunique()}')
-df = df.loc[Y_test.index]
-print(f'Size of test data = {len(df)}, Number of patients = {df["ikn"].nunique()}')
-df = df[df['baseline_sodium_count'].notnull() & df['baseline_albumin_count'].notnull()]
-print(f'Size of test data with both sodium and albumin count = {len(df)}, Number of patients = {df["ikn"].nunique()}')
-df = df[df['days_since_starting_chemo'] == 0] # very first treatment
-print(f'Size of test data with only first day chemos = {len(df)}, Number of patients = {df["ikn"].nunique()}')
+# In[23]:
 
 
-# In[6]:
+from scripts.visualize import plot_lifeline, plot_km_curve
+from scripts.survival import compute_survival
 
 
-def predict(df):
-    x = 10.392 - 0.472*0.1*df['baseline_albumin_count'] - 0.075*df['baseline_sodium_count']
-    return 1 / (1 + np.exp(-x))
+# In[17]:
 
 
-# In[68]:
+event_dates = prep.event_dates
+event_dates['ikn'] = model_data['ikn']
+df = compute_survival(event_dates)
 
 
-split = 'Test'
-pred = predict(df)
-labels = {split: Y_test.loc[df.index]}
-preds = {split: {'ENS': train_ens.preds[split]['ENS'].loc[df.index],
-                 'BRK': pd.DataFrame({col: pred for col in Y_test.columns})}}
-eval_brooks_model = Evaluate(output_path='', preds=preds, labels=labels, orig_data=df)
+# In[18]:
 
 
-# In[69]:
+plot_lifeline(df, n=100) # 100 patients
 
 
-# label distribtuion
-labels[split].apply(pd.value_counts)
+# In[19]:
 
 
-# In[70]:
+plot_km_curve(df.sample(n=100, random_state=2)) # TESTING TESTING
 
 
-kwargs = {'algorithms': ['ENS', 'BRK'], 'splits': ['Test'], 'display_ci': True, 'save_score': False}
-result = eval_brooks_model.get_evaluation_scores(**kwargs)
-result
+# In[20]:
 
 
-# In[71]:
+plot_km_curve(df)
 
 
-eval_brooks_model.all_plots_for_single_target(algorithm='BRK', target_type='H', split='Test',
-                                              n_bins=20, calib_strategy='quantile', figsize=(12,12), save=False)
+# ## Treatment Recommender System
+
+# In[41]:
 
 
-# In[72]:
+from scripts.survival import get_subgroup, get_recommendation, evaluate_recommendation
 
 
-points = np.arange(0.05, 0.51, 0.05)
-eval_brooks_model.operating_points('BRK', points, metric='threshold', target_types=['H'], split='Test', save=False)
+# In[42]:
 
 
-# ### Compare with ENS
-
-# In[73]:
-
-
-eval_brooks_model.all_plots_for_single_target(algorithm='ENS', target_type='H', split='Test',
-                                              n_bins=20, calib_strategy='quantile', figsize=(12,12), save=False)
+df = model_data # all data 
+test_df = model_data.loc[Y_test.index] # test split data
 
 
-# In[74]:
+# ### Pancreas cancer (C25), Palliative Intent (P), First Treatment Course, GEMCNPAC(W) vs FOLFIRINOX/MFOLFIRINOX
+
+# In[43]:
 
 
-points = np.arange(0.05, 0.51, 0.05)
-eval_brooks_model.operating_points('ENS', points, metric='threshold', target_types=['H'], split='Test', save=False)
+regimens = ['gemcnpac(w)', 'folfirinox']
+panc_cancer_codes = ['C25']
+panc_cancer = get_subgroup(test_df, name='pancreas cancer', regimens=regimens, cancer_codes=panc_cancer_codes)
+recommended_regimens = get_recommendation(train_ens, panc_cancer)
+evaluate_recommendation(prep.event_dates, panc_cancer, recommended_regimens)
 
 
-# ## Hyperparameters
+# ### Melanoma (872-879), Palliative Intent (P), First Treatment Course, NIVL+IPIL vs NIVL
 
-# In[16]:
+# In[44]:
 
 
-from scripts.utility import get_hyperparameters
-get_hyperparameters(output_path, days=days)
+"""
+Thoughts: probably hard for the model to find a distinguishable pattern 
+          between patient data for NIVL and NIVL+IPIL, since they have very similar treatment regimen
+"""
+melanoma_codes = [f'87{i}' for i in range(2,10)]
+regimens = ['nivl', 'nivl+ipil']
+melanoma = get_subgroup(test_df, name='melanoma', regimens=regimens, cancer_codes=melanoma_codes, cancer_col='curr_morph_cd')
+recommended_regimens = get_recommendation(train_ens, melanoma)
+evaluate_recommendation(prep.event_dates, melanoma, recommended_regimens)
+
+
+# ### Renal Cancer (C64, C65), Palliative Intent (P), First Treatment Course, NIVI+IPIL vs AXIT+PEMB
+
+# In[45]:
+
+
+"""
+Thoughts: only 10 observations for axit+pemb, not enough data
+"""
+renal_cancer_codes = ['C64', 'C65']
+regimens = ['nivl+ipil', 'axit+pemb']
+renal_cancer = get_subgroup(df, name='renal cancer', regimens=regimens, cancer_codes=renal_cancer_codes)
+recommended_regimens = get_recommendation(train_ens, renal_cancer)
+evaluate_recommendation(prep.event_dates, renal_cancer, recommended_regimens)
+
+
+# ### Stomach Cancer (C16), ECX vs ECF vs FOLFOX vs FOLFIRI
+
+# In[50]:
+
+
+stomach_cancer_codes = ['C16']
+regimens = ['ecx', 'ecf', 'folfiri'] # 'folfox' DOES NOT EXIST
+stomach_cancer = get_subgroup(test_df, name='stomach cancer', regimens=regimens, cancer_codes=stomach_cancer_codes, 
+                              palliatative_intent=False, first_treatment_course=False)
+recommended_regimens = get_recommendation(train_ens, stomach_cancer)
+evaluate_recommendation(prep.event_dates, stomach_cancer, recommended_regimens)
+
+
+# In[ ]:
